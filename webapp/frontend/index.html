@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RA-RAG playground</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header>
+  <h1>RA-RAG playground</h1>
+  <nav>
+    <button id="tab-btn-normal" class="active">Normal</button>
+    <button id="tab-btn-attack">Attack</button>
+  </nav>
+  <a class="nav-link" href="architecture.html">Architecture &amp; attack paths &rarr;</a>
+</header>
+
+<main>
+
+  <!-- ===================== NORMAL TAB ===================== -->
+  <section id="tab-normal" class="tab active">
+
+    <div class="panel">
+      <h2>Presets</h2>
+      <p class="muted">One click: creates a session, runs calibration rounds, locks weights, then runs inference rounds.</p>
+      <div id="normal-presets"></div>
+    </div>
+
+    <div class="panel" id="normal-setup-panel">
+      <h2>1. Sources</h2>
+      <label>Source names (comma-separated)</label>
+      <input type="text" id="normal-source-names" value="Source A, Source B, Source C">
+      <label>Top-&kappa; sources consulted at inference (&kappa;-RRSS)</label>
+      <input type="text" id="normal-top-k" value="3">
+      <button class="primary" id="normal-create-session">Create session</button>
+      <p class="muted" id="normal-session-status"></p>
+    </div>
+
+    <div class="panel hidden" id="normal-calibration-panel">
+      <h2>2. Calibration (estimation phase — weights are not frozen yet)</h2>
+      <p class="muted">Run a few rounds so reliability can be estimated, same as <code>multi_source_weight_est</code>.</p>
+      <label>Query</label>
+      <input type="text" id="normal-cal-query" placeholder="e.g. what is the capital of France">
+      <div id="normal-cal-contexts"></div>
+      <button class="primary" id="normal-add-calibration">Add calibration round</button>
+      <h3 style="font-size:12px;color:var(--muted);margin-top:16px;">Live weight preview (not frozen)</h3>
+      <div id="normal-cal-weights"></div>
+      <table>
+        <thead><tr><th>#</th><th>Query</th><th>Per-source answers</th></tr></thead>
+        <tbody id="normal-cal-history"></tbody>
+      </table>
+      <button class="primary" id="normal-lock">Lock weights &rarr; move to inference</button>
+    </div>
+
+    <div class="panel hidden" id="normal-inference-panel">
+      <h2>3. Inference (weights frozen — only top-&kappa; sources consulted per query)</h2>
+      <div id="normal-frozen-weights"></div>
+      <label>Query</label>
+      <input type="text" id="normal-inf-query" placeholder="e.g. what is the capital of France">
+      <div id="normal-inf-contexts"></div>
+      <button class="primary" id="normal-run-inference">Run inference round</button>
+      <table>
+        <thead><tr><th>#</th><th>Query</th><th>Sources consulted (top-&kappa;)</th><th>Answers</th><th>Consensus (WMV)</th></tr></thead>
+        <tbody id="normal-inf-history"></tbody>
+      </table>
+    </div>
+
+  </section>
+
+  <!-- ===================== ATTACK TAB ===================== -->
+  <section id="tab-attack" class="tab">
+
+    <div class="panel">
+      <h2>Presets</h2>
+      <p class="muted">One click: builds trust during calibration, locks weights, then betrays during inference.</p>
+      <div id="attack-presets"></div>
+    </div>
+
+    <div class="panel" id="attack-setup-panel">
+      <h2>1. Sources (build-then-betray)</h2>
+      <label>Honest source names (comma-separated)</label>
+      <input type="text" id="attack-source-names" value="Source A, Source B">
+      <label>Adversary source name(s) — comma-separated, all behave identically (colluding sources)</label>
+      <input type="text" id="attack-adv-name" value="Adversary">
+      <label>Top-&kappa; sources consulted at inference (&kappa;-RRSS) — lower this to see low-reliability sources filtered out entirely</label>
+      <input type="text" id="attack-top-k" value="3">
+      <button class="primary" id="attack-create-session">Create session</button>
+      <p class="muted" id="attack-session-status"></p>
+    </div>
+
+    <div class="panel hidden" id="attack-calibration-panel">
+      <h2>2. Calibration (build trust — weights not frozen yet)</h2>
+      <label>Query</label>
+      <input type="text" id="attack-cal-query" placeholder="e.g. what is the capital of France">
+      <div id="attack-cal-contexts"></div>
+      <div class="source-block">
+        <div class="name"><span id="attack-adv-label-cal">Adversary</span><span class="badge adv">adversarial</span></div>
+        <label>Adversary behaviour this round</label>
+        <select id="attack-adv-mode-cal">
+          <option value="honest">Honest — real answer (context below)</option>
+          <option value="mimic">Mimic a known-correct answer (agree-to-build-trust)</option>
+        </select>
+        <div id="attack-adv-context-wrap-cal">
+          <label>Adversary's context (grounds the answer — AlignScore filters ungrounded answers to "I don't know", same as the paper)</label>
+          <textarea id="attack-adv-context-cal"></textarea>
+        </div>
+        <div id="attack-adv-answer-wrap-cal" class="hidden">
+          <label>Answer to mimic (the known-correct answer for this query — still needs a supporting context above to pass grounding)</label>
+          <input type="text" id="attack-adv-answer-cal" placeholder="e.g. paris">
+        </div>
+      </div>
+      <button class="primary" id="attack-add-calibration">Add calibration round</button>
+      <h3 style="font-size:12px;color:var(--muted);margin-top:16px;">Live weight preview (not frozen)</h3>
+      <div id="attack-cal-weights"></div>
+      <table>
+        <thead><tr><th>#</th><th>Query</th><th>Per-source answers</th></tr></thead>
+        <tbody id="attack-cal-history"></tbody>
+      </table>
+      <button class="primary" id="attack-lock">Lock weights &rarr; move to inference</button>
+    </div>
+
+    <div class="panel hidden" id="attack-inference-panel">
+      <h2>3. Inference (weights frozen — betray here)</h2>
+      <div id="attack-frozen-weights"></div>
+      <label>Query</label>
+      <input type="text" id="attack-inf-query" placeholder="e.g. what is the capital of France">
+      <div id="attack-inf-contexts"></div>
+      <div class="source-block">
+        <div class="name"><span id="attack-adv-label-inf">Adversary</span><span class="badge adv">adversarial</span></div>
+        <label>Adversary behaviour this round</label>
+        <select id="attack-adv-mode-inf">
+          <option value="honest">Honest — real answer (context below)</option>
+          <option value="payload">Betray — force a specific payload answer</option>
+        </select>
+        <div id="attack-adv-context-wrap-inf">
+          <label>Adversary's context (used when "honest")</label>
+          <textarea id="attack-adv-context-inf"></textarea>
+        </div>
+        <div id="attack-adv-payload-wrap-inf" class="hidden">
+          <label>Payload answer to inject</label>
+          <input type="text" id="attack-adv-payload-inf" placeholder="e.g. berlin">
+        </div>
+      </div>
+      <button class="primary" id="attack-run-inference">Run inference round</button>
+    </div>
+
+    <div id="attack-result-banner" class="result-banner"></div>
+
+    <div class="panel hidden" id="attack-history-panel">
+      <h2>Inference round history</h2>
+      <table>
+        <thead><tr><th>#</th><th>Query</th><th>Sources consulted (top-&kappa;)</th><th>Answers</th><th>Consensus (WMV)</th></tr></thead>
+        <tbody id="attack-inf-history"></tbody>
+      </table>
+    </div>
+
+  </section>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

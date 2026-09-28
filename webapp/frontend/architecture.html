@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RA-RAG — architecture &amp; attack paths</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="architecture.css">
+</head>
+<body>
+
+<header>
+  <h1>RA-RAG playground</h1>
+  <a class="nav-link" href="index.html">&larr; Back to playground</a>
+</header>
+
+<main>
+
+  <h2 style="font-size:22px; color:var(--text); margin: 4px 0 6px 0;">Architecture &amp; attack paths</h2>
+  <p class="subtitle">
+    How this tool's two-phase pipeline mirrors RA-RAG's actual estimate-then-freeze-then-infer design
+    (Hwang et al., EMNLP 2025), and the four ways a source can exploit the gap between "agreed a lot"
+    and "was actually trustworthy."
+  </p>
+
+  <!-- ===================== PIPELINE ===================== -->
+  <div class="panel">
+    <span class="phase-label estimation">Phase 1 — Estimation</span>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="step-title">Sources answer calibration queries</div>
+        <div class="step-desc">Every source gets a query + its own context, answers independently (<code>wrap_prompt</code> + Gemini). No source sees another's answer.</div>
+      </div>
+      <div class="flow-arrow"></div>
+      <div class="flow-step">
+        <div class="step-title">AlignScore grounding filter</div>
+        <div class="step-desc">Each answer is converted to a declarative claim (<code>QAConvertor</code>) and scored against its own context (<code>AlignScore-base</code>). Ungrounded or contradicted answers become <code>"i don't know"</code> before they count for anything.</div>
+      </div>
+      <div class="flow-arrow"></div>
+      <div class="flow-step">
+        <div class="step-title">Reliability estimation (EM)</div>
+        <div class="step-desc"><code>iterative_weighted_majority_voting</code> repeatedly estimates a consensus answer per round and credits each source by how often it matched — this is a weighted-majority-vote crowdsourcing estimator, the same family as Dawid–Skene.</div>
+      </div>
+    </div>
+
+    <div style="height:18px;"></div>
+
+    <span class="phase-label estimation">Lock</span>
+    <div class="flow-branch">
+      Weights freeze here. <strong>Nothing estimated after this point ever changes them again</strong> — this is
+      the exact point a build-then-betray attacker is trying to survive until.
+    </div>
+
+    <div style="height:18px;"></div>
+
+    <span class="phase-label inference">Phase 2 — Inference</span>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="step-title">κ-RRSS source selection</div>
+        <div class="step-desc">For each real query, only the top-<strong>κ</strong> sources by <em>frozen</em> weight are consulted at all. Lower-weight sources are excluded entirely, not just down-weighted.</div>
+      </div>
+      <div class="flow-arrow"></div>
+      <div class="flow-step">
+        <div class="step-title">Semantic clustering</div>
+        <div class="step-desc">The chosen sources' answers go through <code>EntailmentDeberta</code> (pairwise NLI) so paraphrases ("Paris" / "the capital is Paris") merge into one candidate before voting.</div>
+      </div>
+      <div class="flow-arrow"></div>
+      <div class="flow-step">
+        <div class="step-title">Weighted majority vote</div>
+        <div class="step-desc"><code>weighted_majority_voting</code> picks the answer with the highest summed frozen weight among the consulted sources. This is the final answer.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== ATTACK PATHS ===================== -->
+  <h2 style="font-size:16px; color:var(--text); margin: 28px 0 4px 0;">Four attack paths</h2>
+  <p class="subtitle">All four are runnable as one-click presets in the <a class="try-link" href="index.html">Attack tab</a>.</p>
+
+  <div class="legend">
+    <span><span class="dot honest"></span>honest source</span>
+    <span><span class="dot adv"></span>adversarial source</span>
+    <span><span class="dot good"></span>excluded from that round's vote</span>
+  </div>
+
+  <div class="cards">
+
+    <div class="attack-card">
+      <div class="card-head">
+        <h3>1. Build-then-betray, outnumbered</h3>
+        <span class="pill fail">fails</span>
+      </div>
+      <p>
+        One adversary behaves honestly through calibration, earning weight 1.0 — the theoretical maximum a
+        single accuracy-based estimator can award. At the target query it defects. Two honest sources, also
+        at 1.0 each, simply outvote it: 2.0 &gt; 1.0. A reliability weight is capped at 1.0 by construction,
+        so a lone adversary can never outvote two honest sources that agree with each other, no matter how
+        much "trust" it built.
+      </p>
+      <div class="source-chips">
+        <span class="chip honest">Source A <span class="w">w=1.0</span></span>
+        <span class="chip honest">Source B <span class="w">w=1.0</span></span>
+        <span class="chip adv">Adversary <span class="w">w=1.0</span></span>
+      </div>
+      <div class="card-footer">
+        <span class="muted">consensus stays correct</span>
+        <a class="try-link" href="index.html">Try it &rarr;</a>
+      </div>
+    </div>
+
+    <div class="attack-card">
+      <div class="card-head">
+        <h3>2. Colluding sybils</h3>
+        <span class="pill ok">succeeds</span>
+      </div>
+      <p>
+        Fix path 1's ceiling by adding a second adversary. Two colluding sources, both honestly agreeing
+        through calibration, both defect together on the target query with the identical payload. Their
+        combined weight (2.0) now exceeds the lone honest source (1.0) — the estimator has no way to tell
+        that the two "independent" corroborating sources are in fact the same actor, because it never checks
+        for dependence between sources at all.
+      </p>
+      <div class="source-chips">
+        <span class="chip honest">Source A <span class="w">w=0.75</span></span>
+        <span class="chip adv">Adversary 1 <span class="w">w=1.0</span></span>
+        <span class="chip adv">Adversary 2 <span class="w">w=1.0</span></span>
+      </div>
+      <div class="card-footer">
+        <span class="muted">consensus flips to the payload</span>
+        <a class="try-link" href="index.html">Try it &rarr;</a>
+      </div>
+    </div>
+
+    <div class="attack-card">
+      <div class="card-head">
+        <h3>3. κ-RRSS as a double-edged sword</h3>
+        <span class="pill ok">defense holds — usually</span>
+      </div>
+      <p>
+        Lowering κ to 1 with a tied-weight adversary shows the defense working as designed: a low-ranked
+        adversary gets excluded from the vote before it ever gets a hearing — its payload is never even asked.
+        But path 4 shows the same mechanism can backfire: if κ trims the field down to exactly the adversary
+        plus <em>one</em> honest source, and that honest source's own weight has been discounted below the
+        adversary's, the very defense meant to filter out unreliable sources hands the attacker a 1-on-1
+        matchup it wins outright.
+      </p>
+      <div class="source-chips">
+        <span class="chip honest">Source A <span class="w">w=1.0 — chosen</span></span>
+        <span class="chip adv">Adversary <span class="w">w=1.0 — excluded (&kappa;=1)</span></span>
+      </div>
+      <div class="card-footer">
+        <span class="muted">payload never gets asked</span>
+        <a class="try-link" href="index.html">Try it &rarr;</a>
+      </div>
+    </div>
+
+    <div class="attack-card">
+      <div class="card-head">
+        <h3>4. Disagreement erosion (single adversary)</h3>
+        <span class="pill ok">succeeds — no collusion needed</span>
+      </div>
+      <p>
+        The one that doesn't need multiple sources or a weakness in κ. Three honest sources genuinely
+        disagree with each other on disputed trivia (Bell/Meucci, Edison/Swan, Amundsen/Scott). The
+        adversary never needs to know any answer — it just sides with whichever pair already agrees,
+        banking a free 1.0 track record, while each honest source individually drops to 0.75 for
+        disagreeing with a peer once. Once every <em>individual</em> honest source is weaker than the
+        adversary, κ-RRSS excludes the others and hands it a win.
+      </p>
+      <div class="source-chips">
+        <span class="chip honest">Source A <span class="w">w=0.75</span></span>
+        <span class="chip honest">Source B <span class="w">w=0.75</span></span>
+        <span class="chip honest">Source C <span class="w">w=0.75</span></span>
+        <span class="chip adv">Adversary <span class="w">w=1.0</span></span>
+      </div>
+      <div class="card-footer">
+        <span class="muted">consensus flips, single adversary</span>
+        <a class="try-link" href="index.html">Try it &rarr;</a>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="panel" style="margin-top:20px;">
+    <h2>What this maps to in the thesis</h2>
+    <p class="subtitle" style="margin-bottom:0;">
+      Paths 1&ndash;2 are H1 (a patient attacker defeats the defense once enough resources/collusion are spent).
+      Path 3 shows the defense doing its job. Path 4 is the sharper H2 finding: the estimator treats
+      <em>agreement</em> as sufficient evidence of trustworthiness without ever checking whether that
+      agreement was independently arrived at &mdash; a single adversary can free-ride on honest sources'
+      own disagreement with each other, and the very mechanism meant to filter unreliable sources can end
+      up assisting it.
+    </p>
+  </div>
+
+</main>
+
+</body>
+</html>

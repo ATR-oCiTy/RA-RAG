@@ -61,3 +61,6 @@ Thumbs.db
 *.sh.log
 outputs/
 results/
+
+# Secrets
+.env

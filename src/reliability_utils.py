@@ -12,6 +12,8 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
+DEVICE = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+
 
 def source_reliabilty_sampling(num_src, q_prior):
     alpha = 2*q_prior/(1-q_prior)
@@ -101,8 +103,17 @@ def update_reliability(candidates, estimated_answers):
             if estimated_answers[idx] == ans:
                 updated_reliabilities[src_id] += 1
         
-    updated_reliabilities = updated_reliabilities / src_cnt
-    
+    # src_cnt[i]==0 means source i answered "i don't know" every time it was
+    # counted so far (e.g. every answer got filtered as ungrounded) — 0/0 is
+    # undefined, and left unguarded this produces a NaN that later breaks JSON
+    # serialization. No evidence either way is treated as a neutral 0.5 prior,
+    # consistent with the initial v=1 (equal-weight) starting assumption.
+    updated_reliabilities = np.divide(
+        updated_reliabilities, src_cnt,
+        out=np.full_like(updated_reliabilities, 0.5),
+        where=src_cnt != 0,
+    )
+
     return updated_reliabilities
 
 
@@ -144,7 +155,7 @@ def iterative_weighted_majority_voting(outputs, num_src, max_iter, tol, stable_i
 class QAConvertor():
     def __init__(self):
         self.tokenizer = BartTokenizer.from_pretrained("MarkS/bart-base-qa2d")
-        self.model = BartForConditionalGeneration.from_pretrained("MarkS/bart-base-qa2d").to('cuda')
+        self.model = BartForConditionalGeneration.from_pretrained("MarkS/bart-base-qa2d").to(DEVICE)
         
     def no_idk_filtering(self, answers):
         no_idk_idxs = []
@@ -169,7 +180,7 @@ class QAConvertor():
         
         for start_idx in tqdm(range(0, len(bach_prompt), batch_size), desc='convert outputs into declartive outputs'):
             cur_batch_promt = bach_prompt[start_idx:start_idx + batch_size]
-            cur_batch_input = self.tokenizer(cur_batch_promt, return_tensors='pt', padding=True, truncation=True).to('cuda')
+            cur_batch_input = self.tokenizer(cur_batch_promt, return_tensors='pt', padding=True, truncation=True).to(DEVICE)
             cur_batch_output = self.model.generate(cur_batch_input.input_ids, max_new_tokens=200)
             result = self.tokenizer.batch_decode(cur_batch_output, skip_special_tokens=True)
             total_result += result
@@ -212,7 +223,7 @@ class AlignScoreFiltering(Filtering):
         self.scorer = AlignScore(
             model='roberta-base', 
             batch_size=10, 
-            device='cuda:0', 
+            device=DEVICE, 
             ckpt_path=ckpt_path, 
             evaluation_mode='nli_sp'
         )
@@ -277,7 +288,7 @@ class BaseEntailment:
 class EntailmentDeberta(BaseEntailment):
     def __init__(self):
         self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-v2-xlarge-mnli")
-        self.device = "cuda"
+        self.device = DEVICE
         self.model = AutoModelForSequenceClassification.from_pretrained(
             "microsoft/deberta-v2-xlarge-mnli").to(self.device)
 

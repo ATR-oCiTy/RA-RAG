@@ -9,6 +9,11 @@ import torch
 import transformers
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+from google import genai
+from google.genai import types as genai_types
+from dotenv import load_dotenv
+import time
+
 import re
 
 from tqdm import tqdm
@@ -47,25 +52,53 @@ def ance_get_emb(model, input):
 def load_models(args):
     args.model_config_path = f'model_configs/{args.model_name}_config.json'
     model_config = load_json(args.model_config_path)
+
+    if model_config.get('provider') == 'gemini':
+        load_dotenv()
+        api_key = model_config.get('api_key') or os.environ['GEMINI_API_KEY']
+        return {
+            'provider': 'gemini',
+            'client': genai.Client(api_key=api_key),
+            'model_name': model_config['model_name'],
+        }
+
     model_name = model_config['model_name']
-    model = AutoModelForCausalLM.from_pretrained( 
+    model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        device_map="cuda",   
-        torch_dtype="auto",  
-        trust_remote_code=True,  
+        device_map="cuda",
+        torch_dtype="auto",
+        trust_remote_code=True,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    
+
     pipeline = transformers.pipeline(
         "text-generation",
         model=model,
         tokenizer=tokenizer,
         device_map="auto",
         return_full_text=False
-        
+
     )
-    
+
     return pipeline
+
+
+def gemini_generate_content(client, model_name, query, max_new_tokens, temperature, max_retries=5):
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=query,
+                config=genai_types.GenerateContentConfig(
+                    max_output_tokens=max_new_tokens,
+                    temperature=temperature,
+                ),
+            )
+            return response.text or ""
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def load_beir_datasets(dataset_name, split, out_dir=None):
@@ -302,6 +335,22 @@ def f1_score(precision, recall):
 def inference(pipeline, query_lst, max_new_tokens=30, temperature=0.0, do_sample=True, desc=""):
     total_results = []
 
+    if isinstance(pipeline, dict) and pipeline.get('provider') == 'gemini':
+        client = pipeline['client']
+        model_name = pipeline['model_name']
+        for query in tqdm(query_lst, desc=desc):
+            text = gemini_generate_content(
+                client, model_name, query,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature if do_sample else 0.0,
+            )
+            responses = [{'generated_text': text}]
+            final_responses = extract_final_answer(responses, prompt_id=4)
+
+            total_results += final_responses
+
+        return total_results
+
     for idx, query in enumerate(tqdm(query_lst, desc=desc)):
         responses = pipeline(
             query,
@@ -311,10 +360,10 @@ def inference(pipeline, query_lst, max_new_tokens=30, temperature=0.0, do_sample
             pad_token_id=pipeline.tokenizer.eos_token_id
         )
         final_responses = extract_final_answer(responses, prompt_id=4)
-        
+
         total_results += final_responses
-    
-    return total_results 
+
+    return total_results
 
 
 def group_multi_source(outputs, num_src):
